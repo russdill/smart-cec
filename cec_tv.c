@@ -26,6 +26,7 @@ enum new_source_state {
 	NEW_SOURCE_PHYS,
 };
 
+extern bool ser_overflow;
 
 static signed char timeouts[5];
 #define repeat_timeout		timeouts[0]
@@ -33,6 +34,9 @@ static signed char timeouts[5];
 #define new_source_timeout	timeouts[2]
 #define routing_change_timeout	timeouts[3]
 #define serial_timeout		timeouts[4]
+
+static unsigned char recv_pend_cnt;
+static unsigned char recv_pend[8*2];
 
 static unsigned char serial_key_code;
 static unsigned char cec_ui_command;
@@ -52,21 +56,21 @@ static unsigned char deck_cmd;
 
 static unsigned char serial_pos;
 static unsigned char serial_code;
-static unsigned char serial_ack;
+static unsigned char serial_ack1;
+static unsigned char serial_ack2;
 static unsigned char serial_resp;
 
-#define TODO_SEND_PHYS_SOURCE_SER	_BV(0)
-#define TODO_SEND_PHYS_SOURCE_CEC	_BV(1)
-#define TODO_SEND_PHYS_SOURCE		(TODO_SEND_PHYS_SOURCE_CEC|TODO_SEND_PHYS_SOURCE_SER)
-#define TODO_ROUTING_CHANGE		_BV(2)
+#define FLAG0_SEND_PHYS_SOURCE_SER	0
+#define FLAG0_SEND_PHYS_SOURCE_CEC	1
+#define FLAG0_ROUTING_CHANGE		2
+#define FLAG0_CEC_RELEASE		3
+#define FLAG0_CEC_UI_COMMAND		4
+#define FLAG0_ACTIVE_SOURCE		5
+#define FLAG0_KEY_REPEAT		6
+#define FLAG0_KEY_ONCE			7
 
-#define TODO_CEC_RELEASE			_BV(3)
-#define TODO_CEC_UI_COMMAND		_BV(4)
-#define TODO_ACTIVE_SOURCE		_BV(5)
-#define TODO_KEY_REPEAT			_BV(6)
-#define TODO_KEY_ONCE			_BV(7)
-
-register unsigned char todo asm("r2");
+#define FLAG1_MENU_LANG			0
+#define FLAG1_GIVE_PHYS			1
 
 static bool usi_uart_process_byte(void)
 {
@@ -93,13 +97,17 @@ static bool usi_uart_process_byte(void)
 
 	/*
 	 * [Command2][ ][Set ID][ ][OK][Data][x]
+	 * [Command2][ ][Set ID][ ][NG][x]
 	 * m 01 OK00x
+	 * m 01 NGx
 	 * 012345678
 	 */
 	if (serial_pos == 0)
 		serial_code = byte;
 	else if (serial_pos == 5)
-		serial_ack = byte;
+		serial_ack1 = byte;
+	else if (serial_pos == 6)
+		serial_ack2 = byte;
 	else if (serial_pos == 8)
 		serial_resp = byte;
 
@@ -117,7 +125,7 @@ static void lg_response(void)
 	 * The TV always responds to a power query with zero. However, it will
 	 * respond to a remotelock query with NG when off and OK when on.
 	 */
-	if (serial_ack == 'O') {
+	if (serial_ack1 == 'O' && serial_ack2 == 'K') {
 		/* OK, TV is on */
 #ifdef CEC_TV_LOCK
 		/* Lock check */
@@ -125,15 +133,17 @@ static void lg_response(void)
 			tv_state = serial_resp == '1' ? TV_SCAN : TV_DO_LOCK;
 #endif
 		if (tv_state != TV_POWERING_OFF && tv_state != TV_POWER_OFF) {
-			if (tv_state == TV_OFF && tv_logical_source)
-				todo |= TODO_SEND_PHYS_SOURCE;
+			if (tv_state == TV_OFF && tv_logical_source) {
+				GPIOR0 |= _BV(FLAG0_SEND_PHYS_SOURCE_SER);
+				GPIOR0 |= _BV(FLAG0_SEND_PHYS_SOURCE_CEC);
+			}
 			tv_state = TV_ON;
 		}
-	} else {
+	} else if (serial_ack1 == 'N' && serial_ack2 == 'G') {
 		/* NG, TV is off */
 		if (tv_state != TV_POWERING_UP && tv_state != TV_POWER_UP) {
 			if (tv_state == TV_ON)
-				todo |= TODO_ACTIVE_SOURCE;
+				GPIOR0 |= _BV(FLAG0_ACTIVE_SOURCE);
 			tv_state = TV_OFF;
 		}
 	}
@@ -141,11 +151,12 @@ static void lg_response(void)
 
 IR_NEC_PUBLIC void ir_nec_release(void)
 {
-	if (todo & TODO_CEC_UI_COMMAND) {
-		todo &= ~TODO_CEC_UI_COMMAND;
-		todo |= TODO_CEC_RELEASE;
+	if (GPIOR0 & _BV(FLAG0_CEC_UI_COMMAND)) {
+		GPIOR0 &= ~_BV(FLAG0_CEC_UI_COMMAND);
+		GPIOR0 |= _BV(FLAG0_CEC_RELEASE);
 	}
-	todo &= ~(TODO_KEY_ONCE|TODO_KEY_REPEAT);
+	GPIOR0 &= ~_BV(FLAG0_KEY_ONCE);
+	GPIOR0 &= ~_BV(FLAG0_KEY_REPEAT);
 }
 
 /* Needs serial port */
@@ -156,13 +167,13 @@ static bool cec_tv_periodic_serial_tx(void)
 	if (!usi_uart_write_empty())
 		return false;
 
-	if (todo & TODO_KEY_ONCE) {
-		todo &= ~TODO_KEY_ONCE;
+	if (GPIOR0 & _BV(FLAG0_KEY_ONCE)) {
+		GPIOR0 &= ~_BV(FLAG0_KEY_ONCE);
 		goto send_key;
 	}
 
 	/* Volume up/down repeat */
-	if ((todo & TODO_KEY_REPEAT) && repeat_timeout < 0) {
+	if ((GPIOR0 & _BV(FLAG0_KEY_REPEAT)) && repeat_timeout < 0) {
 		repeat_timeout = MS_TO_LJIFFIES_UP(100);
 send_key:
 		cmd1 = 'm';
@@ -171,8 +182,8 @@ send_key:
 		goto send1;
 	}
 
-	if ((todo & TODO_SEND_PHYS_SOURCE_SER) && tv_state == TV_ON) {
-		todo &= ~TODO_SEND_PHYS_SOURCE_SER;
+	if ((GPIOR0 & _BV(FLAG0_SEND_PHYS_SOURCE_SER)) && tv_state == TV_ON) {
+		GPIOR0 &= ~_BV(FLAG0_SEND_PHYS_SOURCE_SER);
 
 		/* Input select */
 		cmd1 = 'x';
@@ -219,7 +230,7 @@ send_key:
 		code = 0xff;
 	}
 
-	tv_query_timeout = MS_TO_LJIFFIES_UP(250);
+	tv_query_timeout = MS_TO_LJIFFIES_UP(1000);
 send1:
 	usi_uart_put(cmd1);
 	usi_uart_put(cmd2);
@@ -230,100 +241,6 @@ send1:
 	usi_uart_num(code >> 4);
 	usi_uart_num(code & 0xf);
 	usi_uart_put('\r');
-	return true;
-}
-
-/* Needs CEC */
-static bool cec_tv_periodic_cec_tx(void)
-{
-	if (transmit_state >= TRANSMIT_PEND)
-		return false;
-
-	/* Pending button release */
-	if (todo & TODO_CEC_RELEASE) {
-		todo &= ~TODO_CEC_RELEASE;
-		if (tv_logical_source) {
-			transmit_buf[0] = tv_logical_source;
-			transmit_buf[1] = CEC_MSG_USER_CONTROL_RELEASED;
-			transmit_buf_end = 1;
-			goto xmit;
-		}
-	}
-
-	/* Pending button repeat */
-	if ((todo & TODO_CEC_UI_COMMAND) && repeat_timeout <= 0) {
-		if (!tv_logical_source)
-			todo &= ~TODO_CEC_UI_COMMAND;
-		else {
-			repeat_timeout = MS_TO_LJIFFIES_UP(400);
-
-			transmit_buf[0] = tv_logical_source;
-			transmit_buf[1] = CEC_MSG_USER_CONTROL_PRESSED;
-			transmit_buf[2] = cec_ui_command;
-			transmit_buf_end = 2;
-			goto xmit;
-		}
-	}
-
-	if (deck_cmd) {
-		if (tv_logical_source) {
-			transmit_buf[0] = tv_logical_source;
-			if (deck_cmd > CEC_MSG_DECK_CONTROL_MODE_EJECT)
-				transmit_buf[1] = CEC_MSG_DECK_CONTROL;
-			else
-				transmit_buf[1] = CEC_MSG_PLAY;
-			transmit_buf[2] = deck_cmd;
-		}
-		deck_cmd = 0;
-		goto xmit;
-	}
-
-	if (todo & TODO_ACTIVE_SOURCE) {
-		/* Notify current active source tv is turning off */
-		todo &= ~TODO_ACTIVE_SOURCE;
-
-		transmit_buf[0] = CEC_ADDR_BROADCAST;
-		transmit_buf[1] = CEC_MSG_ACTIVE_SOURCE;
-		transmit_buf[2] = 0;
-		transmit_buf[3] = 0;
-		transmit_buf_end = 3;
-		goto xmit;
-
-	} else if (todo & TODO_SEND_PHYS_SOURCE_CEC) {
-		todo &= ~TODO_SEND_PHYS_SOURCE_CEC;
-		transmit_buf[0] = CEC_ADDR_BROADCAST;
-		transmit_buf[1] = CEC_MSG_SET_STREAM_PATH;
-		transmit_buf[2] = tv_phys_source >> 8;
-		transmit_buf[3] = tv_phys_source;
-		transmit_buf_end = 3;
-		goto xmit;
-
-	} else if (new_source_state == NEW_SOURCE_LOGICAL) {
-		next_source++;
-		if (next_source == CEC_ADDR_BROADCAST)
-			next_source = 1;
-		if (source_present & (1 << next_source)) {
-			new_source_timeout = MS_TO_LJIFFIES_UP(300);
-			new_source_state = NEW_SOURCE_PHYS;
-
-			transmit_buf[0] = next_source;
-			transmit_buf[1] = CEC_MSG_GIVE_PHYSICAL_ADDRESS;
-			transmit_buf_end = 1;
-			goto xmit;
-		}
-
-	} else if (new_source_state == NEW_SOURCE_PING) {
-		new_source_timeout = MS_TO_LJIFFIES_UP(1000);
-		new_source_state = NEW_SOURCE_IDLE;
-
-		transmit_buf[0] = next_source;
-		transmit_buf_end = 0;
-		goto xmit;
-	}
-	return true;
-
-xmit:
-	transmit_state = TRANSMIT_PEND;
 	return true;
 }
 
@@ -346,11 +263,13 @@ static bool ir_nec_press_periodic(void)
 	case KEY_POWER:
 		if (tv_state == TV_ON) {
 			tv_state = TV_POWER_OFF;
-			todo |= TODO_ACTIVE_SOURCE;
+			GPIOR0 |= _BV(FLAG0_ACTIVE_SOURCE);
 		} else if (tv_state == TV_OFF) {
 			tv_state = TV_POWER_UP;
-			if (tv_logical_source)
-				todo |= TODO_SEND_PHYS_SOURCE;
+			if (tv_logical_source) {
+				GPIOR0 |= _BV(FLAG0_SEND_PHYS_SOURCE_SER);
+				GPIOR0 |= _BV(FLAG0_SEND_PHYS_SOURCE_CEC);
+			}
 		}
 		break;
 	}
@@ -371,11 +290,11 @@ static bool ir_nec_press_periodic(void)
 	case KEY_VOL_UP:
 	case KEY_VOL_DOWN:
 		repeat_timeout = MS_TO_LJIFFIES_UP(500);
-		todo |= TODO_KEY_REPEAT;
+		GPIOR0 |= _BV(FLAG0_KEY_REPEAT);
 		/* Fall-through for KEY_ONCE */
 
 	case KEY_MUTE:
-		todo |= TODO_KEY_ONCE;
+		GPIOR0 |= _BV(FLAG0_KEY_ONCE);
 		break;
 
 	/* Deck Control */
@@ -421,15 +340,186 @@ static bool ir_nec_press_periodic(void)
 		cec_ui_command = EEDR;
 		if (cec_ui_command == 0xff)
 			return true;
-		todo |= TODO_CEC_UI_COMMAND;
+		GPIOR0 |= _BV(FLAG0_CEC_UI_COMMAND);
 		repeat_timeout = 0;
 	}
 
 	return true;
 }
 
-static bool cec_tv_process_cec_rx_direct(unsigned char source, unsigned char len)
+/* Needs CEC */
+static bool cec_tv_periodic_cec_tx(void)
 {
+	unsigned char end;
+	unsigned char *buf;
+
+	/* Convince GCC to let us use indirect addressing */
+	asm("ldi %A0, lo8(transmit_buf)\n"
+	    "ldi %B0, hi8(transmit_buf)\n" : "=b"(buf));
+
+	if (transmit_state >= TRANSMIT_PEND)
+		return false;
+
+	/* Handle message replies that get sent back to the initiator */
+	if (recv_pend_cnt) {
+		unsigned char *pend_buf;
+		unsigned char source;
+		unsigned char opcode;
+
+		recv_pend_cnt -= 2;
+		pend_buf = recv_pend + recv_pend_cnt;
+		source = *pend_buf++;
+		opcode = *pend_buf++;
+
+		buf[0] = source;
+		switch (opcode) {
+		case CEC_MSG_GET_CEC_VERSION:
+			/* Send CEC_MSG_CEC_VERSION <version> */
+			buf[1] = CEC_MSG_CEC_VERSION;
+			buf[2] = CEC_MSG_CEC_VERSION_1_4;
+			end = 2;
+			break;
+
+		case CEC_MSG_GIVE_DEVICE_POWER_STATUS:
+			buf[1] = CEC_MSG_REPORT_POWER_STATUS;
+			if (tv_state == TV_ON)
+				buf[2] = CEC_MSG_POWER_STATUS_ON;
+			else if (tv_state == TV_OFF)
+				buf[2] = CEC_MSG_POWER_STATUS_STANDBY;
+			else if (tv_state >= TV_POWER_UP)
+				buf[2] = CEC_MSG_POWER_STATUS_2ON;
+			else
+				buf[2] = CEC_MSG_POWER_STATUS_2STANDBY;
+			end = 2;
+			break;
+
+		default:
+			/* Send CEC_MSG_ABORT <unk opcode> */
+			buf[1] = CEC_MSG_FEATURE_ABORT;
+			buf[2] = opcode;
+			buf[3] = CEC_MSG_ABORT_REASON_OPCODE;
+			end = 3;
+		}
+
+		goto xmit;
+	}
+
+	buf[0] = CEC_ADDR_BROADCAST;
+
+	/* Broadcast message replies */
+	if (GPIOR1 & _BV(FLAG1_MENU_LANG)) {
+		GPIOR1 &= ~_BV(FLAG1_MENU_LANG);
+
+		buf[1] = CEC_MSG_SET_MENU_LANGUAGE;
+		buf[2] = 'e';
+		buf[3] = 'n';
+		buf[4] = 'g';
+		end = 4;
+		goto xmit;
+	}
+
+	if (GPIOR1 & _BV(FLAG1_GIVE_PHYS)) {
+		GPIOR1 &= ~_BV(FLAG1_GIVE_PHYS);
+
+		buf[1] = CEC_MSG_REPORT_PHYSICAL_ADDRESS;
+		buf[2] = 0;
+		buf[3] = 0;
+		buf[4] = CEC_MSG_DEVICE_TYPE_TV;
+		end = 4;
+		goto xmit;
+	}
+
+	/* Pending button release */
+	if (GPIOR0 & _BV(FLAG0_CEC_RELEASE)) {
+		GPIOR0 &= ~_BV(FLAG0_CEC_RELEASE);
+		if (tv_logical_source) {
+			buf[0] = tv_logical_source;
+			buf[1] = CEC_MSG_USER_CONTROL_RELEASED;
+			end = 1;
+			goto xmit;
+		}
+	}
+
+	/* Pending button repeat */
+	if ((GPIOR0 & _BV(FLAG0_CEC_UI_COMMAND)) && repeat_timeout <= 0) {
+		if (!tv_logical_source)
+			GPIOR0 &= ~_BV(FLAG0_CEC_UI_COMMAND);
+		else {
+			repeat_timeout = MS_TO_LJIFFIES_UP(400);
+
+			buf[0] = tv_logical_source;
+			buf[1] = CEC_MSG_USER_CONTROL_PRESSED;
+			buf[2] = cec_ui_command;
+			end = 2;
+			goto xmit;
+		}
+	}
+
+	if (deck_cmd) {
+		buf[0] = tv_logical_source;
+		if (deck_cmd > CEC_MSG_DECK_CONTROL_MODE_EJECT)
+			buf[1] = CEC_MSG_PLAY;
+		else
+			buf[1] = CEC_MSG_DECK_CONTROL;
+		buf[2] = deck_cmd;
+		deck_cmd = 0;
+		end = 2;
+		if (tv_logical_source)
+			goto xmit;
+	}
+
+	if (GPIOR0 & _BV(FLAG0_ACTIVE_SOURCE)) {
+		/* Notify current active source tv is turning off */
+		GPIOR0 &= ~_BV(FLAG0_ACTIVE_SOURCE);
+
+		buf[1] = CEC_MSG_ACTIVE_SOURCE;
+		buf[2] = 0;
+		buf[3] = 0;
+		end = 3;
+		goto xmit;
+
+	} else if (GPIOR0 & _BV(FLAG0_SEND_PHYS_SOURCE_CEC)) {
+		GPIOR0 &= ~_BV(FLAG0_SEND_PHYS_SOURCE_CEC);
+
+		buf[1] = CEC_MSG_SET_STREAM_PATH;
+		buf[2] = tv_phys_source >> 8;
+		buf[3] = tv_phys_source;
+		end = 3;
+		goto xmit;
+
+	} else if (new_source_state == NEW_SOURCE_LOGICAL) {
+		next_source++;
+		if (next_source == CEC_ADDR_BROADCAST)
+			next_source = 1;
+		if (source_present & (1 << next_source)) {
+			new_source_timeout = MS_TO_LJIFFIES_UP(300);
+			new_source_state = NEW_SOURCE_PHYS;
+
+			buf[0] = next_source;
+			buf[1] = CEC_MSG_GIVE_PHYSICAL_ADDRESS;
+			end = 1;
+			goto xmit;
+		}
+
+	} else if (new_source_state == NEW_SOURCE_PING) {
+		new_source_timeout = MS_TO_LJIFFIES_UP(1000);
+		new_source_state = NEW_SOURCE_IDLE;
+
+		buf[0] = next_source;
+		end = 0;
+		goto xmit;
+	}
+	return true;
+
+xmit:
+	transmit_state = TRANSMIT_PEND;
+	transmit_buf_end = end;
+	return true;
+}
+
+static void cec_tv_process_cec_rx_direct(unsigned char source, unsigned char len)
+{
+
 	/* Directly addressed messages */
 	switch (cec_receive_buf[2]) {
 	/* One Touch Play */
@@ -438,7 +528,7 @@ static bool cec_tv_process_cec_rx_direct(unsigned char source, unsigned char len
 		/* Make sure TV is on */
 		if (tv_state < TV_POWER_UP)
 			tv_state = TV_POWER_UP;
-		return false;
+		break;
 
 	/* Routing Control */
 	case CEC_MSG_INACTIVE_SOURCE:
@@ -447,67 +537,20 @@ static bool cec_tv_process_cec_rx_direct(unsigned char source, unsigned char len
 		/* Set stream path for next source */
 		if (tv_logical_source == source)
 			new_source_state = NEW_SOURCE_PICK;
-
-		return false;
-
-	case CEC_MSG_REPORT_POWER_STATUS:
-		return false;
-
-	/* Protocol */
-	case CEC_MSG_FEATURE_ABORT:
-		/* Opcode, reason */
-		return false;
-	}
-
-	if (transmit_state >= TRANSMIT_PEND)
-		/* Wait for TX hardware to be free */
-		return true;
-
-	/* Messages that get replied to on the broadcast address */
-	transmit_buf[0] = CEC_ADDR_BROADCAST;
-	switch (cec_receive_buf[2]) {
-	case CEC_MSG_GET_MENU_LANGUAGE:
-		transmit_buf[1] = CEC_MSG_SET_MENU_LANGUAGE;
-		transmit_buf[2] = 'e';
-		transmit_buf[3] = 'n';
-		transmit_buf[4] = 'g';
-		transmit_buf_end = 4;
-		goto done;
-
-	case CEC_MSG_GIVE_PHYSICAL_ADDRESS:
-		transmit_buf[1] = CEC_MSG_REPORT_PHYSICAL_ADDRESS;
-		transmit_buf[2] = 0;
-		transmit_buf[3] = 0;
-		transmit_buf[4] = CEC_MSG_DEVICE_TYPE_TV;
-		transmit_buf_end = 4;
-		goto done;
-	}
-
-	/* Don't go any further if the initiator is unassigned */
-	if (source == CEC_ADDR_UNREGISTERED)
-		return false;
-
-	/* Messages that get sent back to the initiator */
-	transmit_buf[0] = source;
-	switch (cec_receive_buf[2]) {
-	case CEC_MSG_GET_CEC_VERSION:
-		/* Send CEC_MSG_CEC_VERSION <version> */
-		transmit_buf[1] = CEC_MSG_CEC_VERSION;
-		transmit_buf[2] = CEC_MSG_CEC_VERSION_1_3A;
-		transmit_buf_end = 2;
 		break;
 
-	case CEC_MSG_GIVE_DEVICE_POWER_STATUS:
-		transmit_buf[1] = CEC_MSG_REPORT_POWER_STATUS;
-		if (tv_state == TV_ON)
-			transmit_buf[2] = CEC_MSG_POWER_STATUS_ON;
-		else if (tv_state == TV_OFF)
-			transmit_buf[2] = CEC_MSG_POWER_STATUS_STANDBY;
-		else if (tv_state >= TV_POWER_UP)
-			transmit_buf[2] = CEC_MSG_POWER_STATUS_2ON;
-		else
-			transmit_buf[2] = CEC_MSG_POWER_STATUS_2STANDBY;
-		transmit_buf_end = 2;
+	case CEC_MSG_REPORT_POWER_STATUS:
+		break;
+
+	case CEC_MSG_GET_MENU_LANGUAGE:
+		GPIOR1 |= _BV(FLAG1_MENU_LANG);
+		break;
+
+	case CEC_MSG_GIVE_PHYSICAL_ADDRESS:
+		GPIOR1 |= _BV(FLAG1_GIVE_PHYS);
+		break;
+
+	case CEC_MSG_FEATURE_ABORT:
 		break;
 
 	case CEC_MSG_VENDOR_COMMAND:
@@ -516,22 +559,21 @@ static bool cec_tv_process_cec_rx_direct(unsigned char source, unsigned char len
 			wdt_enable(0);
 			for(;;);
 		}
-		/* Fall throught to feature abort */
+		/* Fall-through */
 
 	default:
-		/* Send CEC_MSG_ABORT <unk opcode> */
-		transmit_buf[1] = CEC_MSG_FEATURE_ABORT;
-		transmit_buf[2] = cec_receive_buf[2];
-		transmit_buf[3] = CEC_MSG_ABORT_REASON_OPCODE;
-		transmit_buf_end = 3;
+		/* Don't go any further if the initiator is unassigned */
+		if (source != CEC_ADDR_UNREGISTERED) {
+			unsigned char *buf;
+			buf = recv_pend + recv_pend_cnt;
+			recv_pend_cnt += 2;
+			*buf++ = source;
+			*buf++ = cec_receive_buf[2];
+		}
 	}
-
-done:
-	transmit_state = TRANSMIT_PEND;
-	return false;
 }
 
-static bool cec_tv_process_cec_rx_bcast(unsigned char source, unsigned char len)
+static void cec_tv_process_cec_rx_bcast(unsigned char source, unsigned char len)
 {
 	/* Broadcast messages */
 	switch (cec_receive_buf[2]) {
@@ -541,8 +583,8 @@ static bool cec_tv_process_cec_rx_bcast(unsigned char source, unsigned char len)
 
 		new_routing_phys = cec_receive_buf[6] |
 					(cec_receive_buf[5] << 8);
-		routing_change_timeout = MS_TO_LJIFFIES_UP(50);
-		todo |= TODO_ROUTING_CHANGE;
+		routing_change_timeout = MS_TO_LJIFFIES_UP(200);
+		GPIOR0 |= _BV(FLAG0_ROUTING_CHANGE);
 		break;
 
 	case CEC_MSG_ROUTING_INFORMATION:
@@ -553,8 +595,8 @@ static bool cec_tv_process_cec_rx_bcast(unsigned char source, unsigned char len)
 
 		new_routing_phys = cec_receive_buf[4] |
 					(cec_receive_buf[3] << 8);
-		routing_change_timeout = MS_TO_LJIFFIES_UP(50);
-		todo |= TODO_ROUTING_CHANGE;
+		routing_change_timeout = MS_TO_LJIFFIES_UP(200);
+		GPIOR0 |= _BV(FLAG0_ROUTING_CHANGE);
 		break;
 
 	case CEC_MSG_REPORT_PHYSICAL_ADDRESS:
@@ -567,8 +609,13 @@ static bool cec_tv_process_cec_rx_bcast(unsigned char source, unsigned char len)
 			break;
 
 		tv_logical_source = source;
-		todo &= ~TODO_ROUTING_CHANGE;
-		todo |= TODO_SEND_PHYS_SOURCE;
+		GPIOR0 &= ~_BV(FLAG0_ROUTING_CHANGE);
+
+		if (tv_state >= TV_POWER_UP) {
+			GPIOR0 |= _BV(FLAG0_SEND_PHYS_SOURCE_SER);
+			GPIOR0 |= _BV(FLAG0_SEND_PHYS_SOURCE_CEC);
+		}
+
 		new_source_state = NEW_SOURCE_IDLE;
 		tv_phys_source = cec_receive_buf[4] | (cec_receive_buf[3] << 8);
 		break;
@@ -581,8 +628,8 @@ static bool cec_tv_process_cec_rx_bcast(unsigned char source, unsigned char len)
 			break;
 
 		tv_logical_source = source;
-		todo |= TODO_SEND_PHYS_SOURCE_SER;
-		todo &= ~TODO_ROUTING_CHANGE;
+		GPIOR0 |= _BV(FLAG0_SEND_PHYS_SOURCE_SER);
+		GPIOR0 &= ~_BV(FLAG0_ROUTING_CHANGE);
 		new_source_state = NEW_SOURCE_IDLE;
 		tv_phys_source = cec_receive_buf[4] | (cec_receive_buf[3] << 8);
 
@@ -590,8 +637,6 @@ static bool cec_tv_process_cec_rx_bcast(unsigned char source, unsigned char len)
 			tv_state = TV_POWER_UP;
 		break;
 	}
-
-	return false;
 }
 
 static bool cec_tv_process_cec_rx(void)
@@ -599,16 +644,20 @@ static bool cec_tv_process_cec_rx(void)
 	unsigned char len;
 	unsigned char source;
 	unsigned char target;
-	bool again = false;
 
-	if (!cec_receive_buf[0])
+	len = cec_receive_buf[0];
+	cec_receive_buf[0] = 0;
+
+	if (!len)
 		return false;
 
 	/* Ignore packets with errors */
-	if (cec_receive_buf[0] & 0xc0)
-		goto done;
+	if (len & 0xc0)
+		return false;
 
-	len = cec_receive_buf[0];
+	/* Buffer full, start dropping things */
+	if (recv_pend_cnt == sizeof(recv_pend))
+		return false;
 
 	source = cec_receive_buf[1] >> 4;
 	target = cec_receive_buf[1] & 0xf;
@@ -618,28 +667,25 @@ static bool cec_tv_process_cec_rx(void)
 
 	/* Ignore empty messages and messages from us */
 	if (len < 2 || cec_addr_match(source))
-		goto done;
+		return false;
 
 	if (target == CEC_ADDR_BROADCAST)
-		again = cec_tv_process_cec_rx_bcast(source, len);
+		cec_tv_process_cec_rx_bcast(source, len);
 	else if (cec_addr_match(target))
-		again = cec_tv_process_cec_rx_direct(source, len);
-
-	if (!again) {
-done:
-		cec_receive_buf[0] = 0;
-	}
+		cec_tv_process_cec_rx_direct(source, len);
 
 	return true;
 }
 
 CEC_TV_PUBLIC void cec_tv_periodic(unsigned char delta_long)
 {
-	unsigned int i;
+	unsigned char i;
 	for (i = 0; i < sizeof(timeouts); i++) {
 		if (timeouts[i] >= 0)
 			timeouts[i] -= delta_long;
 	}
+
+	while (ser_overflow);
 
 	/* Check for nacks/acks */
 	if (transmit_buf[0] && transmit_state < TRANSMIT_PEND) {
@@ -654,23 +700,26 @@ CEC_TV_PUBLIC void cec_tv_periodic(unsigned char delta_long)
 		return;
 	}
 
-	if (routing_change_timeout < 0 && (todo & TODO_ROUTING_CHANGE)) {
+	if (routing_change_timeout < 0 && (GPIOR0 & _BV(FLAG0_ROUTING_CHANGE))) {
+		GPIOR0 &= ~_BV(FLAG0_ROUTING_CHANGE);
+
 		if (tv_phys_source != new_routing_phys) {
 			tv_phys_source = new_routing_phys;
 			tv_logical_source = 0;
-			todo |= TODO_SEND_PHYS_SOURCE;
+			GPIOR0 |= _BV(FLAG0_SEND_PHYS_SOURCE_SER);
+			GPIOR0 |= _BV(FLAG0_SEND_PHYS_SOURCE_CEC);
 		}
 
-		todo &= ~TODO_ROUTING_CHANGE;
 		new_source_state = NEW_SOURCE_IDLE;
 		return;
 	}
 
 	if (new_source_timeout < 0) {
-		if (new_source_state == NEW_SOURCE_PHYS)
+		if (new_source_state == NEW_SOURCE_PHYS) {
 			/* Our query never came back */
 			new_source_state = NEW_SOURCE_LOGICAL;
-		else if (new_source_state == NEW_SOURCE_IDLE) {
+			source_present &= ~(1 << next_source);
+		} else if (new_source_state == NEW_SOURCE_IDLE) {
 			next_source++;
 			if (next_source == CEC_ADDR_BROADCAST)
 				next_source = 1;

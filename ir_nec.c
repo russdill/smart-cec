@@ -15,6 +15,8 @@ bool ir_nec_has_last;
 bool ir_nec_ready;
 unsigned char ir_nec_output[2];
 
+extern unsigned char ir_nec_last_pins;
+
 /* Needs to be called every ~562.5uS */
 /* FIXME: Set special do_release flag when starting a new keypress */
 IR_NEC_PUBLIC void ir_nec_periodic(unsigned char delta_long)
@@ -33,6 +35,8 @@ IR_NEC_PUBLIC void ir_nec_periodic(unsigned char delta_long)
 
 IR_NEC_PUBLIC void ir_nec_init(void)
 {
+	ir_nec_last_pins = _BV(PB2);
+
 	/* Watch both edges of INT0 */
 	MCUCR |= _BV(ISC00);
 	GIMSK |= _BV(INT0);

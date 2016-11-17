@@ -3,6 +3,8 @@
 #include <avr/io.h>
 #include <avr/iotn45.h>
 
+#include "time.h"
+
 #define __zero_reg__ r1
 
 			     /*   low  /  high */
@@ -12,9 +14,9 @@
 #define NEC_1		0x02 /* 565.5uS/1687.5uS */
 
 /* 565.5uS */
-#define NEC_PERIOD_1	1125
-#define NEC_PERIOD_0_6	(NEC_PERIOD_1 * 6 / 10)
-#define NEC_PERIOD_1_4	(NEC_PERIOD_1 * 14 / 10)
+#define NEC_PERIOD_1	NS_TO_JIFFIES_RND(565500)
+#define NEC_PERIOD_0_6	NS_TO_JIFFIES_RND(565500 * 6 / 10)
+#define NEC_PERIOD_1_4	NS_TO_JIFFIES_RND(565500 * 14 / 10)
 
 
 	.section	.bss.ir_nec_isr, "aw", @nobits
@@ -28,6 +30,7 @@ ir_nec_byte_pos:
 	.zero	1
 ir_nec_buf:
 	.zero	2
+	.global ir_nec_last_pins
 ir_nec_last_pins:
 	.zero	1
 
@@ -91,14 +94,6 @@ __vector_1:
 	/* delta = j - ir_nec_last_time */
 	sub r22, r20
 	sbc r23, r21
-
-#if 0
-	inc r1
-	sts ir_nec_ready, r1
-	sts ir_nec_output, r23
-	sts ir_nec_output+1, r22
-	dec r1
-#endif
 
  	/* for (period = 0; */
 	clr r24

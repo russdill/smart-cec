@@ -86,7 +86,7 @@ wait_for_low:
 	cpi	r18, 9		/* Only during ack cycle */
 	brne	1f
 	sbrc	r4, 0
-	cbi	CEC_DDR, PB4
+	sbi	CEC_PORT, PB4
 
 	/* Watch/time low period */
 1:	ldi	r16, US_TO_TICKS(CEC_T6_LATE0)
@@ -102,7 +102,7 @@ sample_loop:
 	/* Check if it's time to stop acking */
 1:	cpi	r16, US_TO_TICKS(CEC_T6_LATE0 - CEC_0)
 	brne	1f
-	sbi	CEC_DDR, PB4
+	cbi	CEC_PORT, PB4
 
 	/* Delay 256 * 3 cycles */
 1: 	dec	r3

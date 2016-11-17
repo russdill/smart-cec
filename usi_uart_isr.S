@@ -231,17 +231,17 @@ uart_process_done:
 	/* usi_uart_next_br = 0 */
 	ldi r25, 0
 
-	/* mask = 0xf0 */
+	/* mask = 0xf0, generate top 4 bits first */
 	ldi r26, 0xf0
 
 	/* r30/r31 send_buf */
 
 generate_output_loop:
-	/* if (send_state == SEND_IDLE) */
+	/* If send_state == SEND_IDLE, we need a new byte */
 	cpi r24, SEND_IDLE
 	brne generate_next_bit
 
-	/* if (!send_prod) return */
+	/* If send_prod == 0, there's no new byte yet, just generate 1's */
 	lds r24, send_prod
 	tst r24
 	brne generate_next_byte
@@ -253,7 +253,7 @@ generate_one:
 
 
 generate_next_byte:
-	/* r24 = send_buf[send_consumer] */
+	/* r31 = send_buf[send_consumer] */
 	lds r30, send_consumer
 	ldi r31, 0
 	subi r30, lo8(-(send_buf))
@@ -275,24 +275,26 @@ generate_next_byte:
 
 	/* send_state = SEND_DATA0 */
 1:	ldi r24, SEND_DATA0
+
+	/* Send the start bit */
 	rjmp generate_zero
 
 generate_next_bit:
 	/* send_state-- */
 	subi r24, 1
 
-	/* Preload the carry bit with the stop bit */
-	cpse r24, SEND_DATA1
-	sec
+	/* Stop bit is always 1 */
+	breq generate_one
 
 	/* send_byte >>= 1 */
-	ror r31
+	lsr r31
 
 	/* if (ret) */
 	brcs generate_one
 
 generate_zero:
-	/* mask = ~mask */
+
+	/* mask = ~mask, now generate bottom 4 bits */
 	com r26
 
 	/* while (mask > 0) */

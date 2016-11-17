@@ -27,7 +27,7 @@ OBJS = main.o
 OBJS += ir_nec_isr.o
 OBJS += usi_uart_isr.o
 
-all: main.hex test.hex
+all: main.hex test.hex echo.hex
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -48,6 +48,13 @@ flashtest: test.hex
 	$(AVRDUDE) -U flash:w:$<:i -B 20
 
 test.elf: test.o ir_nec_isr.o usi_uart_isr.o
+	$(CC) $(CFLAGS) -o $@ $^
+	avr-size $@
+
+flashecho: echo.hex
+	$(AVRDUDE) -U flash:w:$<:i -B 20
+
+echo.elf: echo.o usi_uart_isr.o
 	$(CC) $(CFLAGS) -o $@ $^
 	avr-size $@
 

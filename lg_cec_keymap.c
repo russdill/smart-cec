@@ -126,5 +126,5 @@ PROGMEM const unsigned char cec_keymap[0xf0] = {
 	[KEY_GOTO_NEXT] =	CEC_KEY_FORWARD,
 	[KEY_REC] =		CEC_KEY_RECORD,
 	[KEY_MC_EJECT] =	CEC_KEY_EJECT,
-	[KEY_SAP] =		CEC_KEY_DOT,
+	[KEY_SAP] =		CEC_KEY_ENTER,
 };

@@ -247,7 +247,7 @@ static bool cec_tv_periodic_serial_tx(void)
 	if (serial_tx_timeout >= 0)
 		return false;
 
-	/* Mute */
+	/* Pass through keypresses */
 	if (GPIOR0 & _BV(FLAG0_KEY_ONCE)) {
 		GPIOR0 &= ~_BV(FLAG0_KEY_ONCE);
 		goto send_key;

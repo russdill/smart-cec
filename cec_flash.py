@@ -35,7 +35,7 @@ crc16 = crcmod.mkCrcFun(0x18005, 0xffff)
 class cec_flasher(cec.device):
     def __init__(self, idx=0):
         super(cec_flasher, self).__init__(idx)
-        self.logical_addresses(0)
+        self.logical_addresses(1 << 0xf)
 	self.read(timeout_ms=1)
 
     def tx_done(self, status):

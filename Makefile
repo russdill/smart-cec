@@ -128,4 +128,4 @@ disasm_test: test.elf
 	$(OBJDUMP) -d $<
 
 clean:
-	-rm -f *.{hex,elf,o}
+	-rm -f *.{hex,elf,o,bin}

@@ -42,8 +42,6 @@ class cec_flasher(cec.device):
         self.response = status
 
     def receive_msg(self, msg, length, status):
-        return
-
         extended = []
 
         if length < len(msg):
@@ -62,14 +60,12 @@ class cec_flasher(cec.device):
         ret = cec.cec_to_str(source, target, opcode, *extra, **args)
         if extended:
             ret += ' ' + extended
-        print ret
 
     def write_sync(self, b):
         self.write(b)
         self.response = None
         while self.response is None:
             self.read()
-        #print 'tx response', self.response
         return self.response
 
     def cmd(self, cmd, b=''):
@@ -77,7 +73,6 @@ class cec_flasher(cec.device):
 	b += struct.pack('<H', crc16(b))
         (source, target, opcode, extra, args) = cec_msg.decode(b)
         ret = cec.cec_to_str(source, target, opcode, *extra, **args)
-        #print 'sending', ret
         return self.write_sync(b)
 
     def ping(self):

@@ -43,7 +43,6 @@ enum new_source_state {
 	NEW_SOURCE_PHYS,
 };
 
-extern bool ser_overflow;
 
 /* Key repeart timeout, initial repeat 500ms, subsequent 100ms */
 static signed char timeouts[5];
@@ -771,8 +770,6 @@ CEC_TV_PUBLIC void cec_tv_periodic(unsigned char delta_long)
 		if (timeouts[i] >= 0)
 			timeouts[i] -= delta_long;
 	}
-
-	while (ser_overflow);
 
 	/* Check for nacks/acks */
 	if (transmit_buf[0] && transmit_state < TRANSMIT_PEND) {

@@ -225,16 +225,6 @@ static void lg_response(void)
 	}
 }
 
-IR_NEC_PUBLIC void ir_nec_release(void)
-{
-	if (GPIOR0 & _BV(FLAG0_CEC_UI_COMMAND)) {
-		GPIOR0 &= ~_BV(FLAG0_CEC_UI_COMMAND);
-		GPIOR0 |= _BV(FLAG0_CEC_RELEASE);
-	}
-	GPIOR0 &= ~_BV(FLAG0_KEY_ONCE);
-	GPIOR0 &= ~_BV(FLAG0_KEY_REPEAT);
-}
-
 /* Periodic things that need to send on the serial port */
 static bool cec_tv_periodic_serial_tx(void)
 {
@@ -321,6 +311,17 @@ send1:
 	usi_uart_num(code & 0xf);
 	usi_uart_put('\r');
 	return true;
+}
+
+/* Called by IR subsystem when a button release occurs */
+IR_NEC_PUBLIC void ir_nec_release(void)
+{
+	if (GPIOR0 & _BV(FLAG0_CEC_UI_COMMAND)) {
+		GPIOR0 &= ~_BV(FLAG0_CEC_UI_COMMAND);
+		GPIOR0 |= _BV(FLAG0_CEC_RELEASE);
+	}
+	GPIOR0 &= ~_BV(FLAG0_KEY_ONCE);
+	GPIOR0 &= ~_BV(FLAG0_KEY_REPEAT);
 }
 
 /* Periodically check if there is a new IR button press */

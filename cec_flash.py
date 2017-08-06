@@ -156,7 +156,7 @@ print 'Erasing'
 dev.erase()
 print 'Programming %d bytes' % seg.size
 
-bar = progress.bar.Bar('Flashing', max=pagesize/bootloader_start-1,
+bar = progress.bar.Bar('Flashing', max=bootloader_start/pagesize,
 		suffix='Page %(index)d/%(max)d, %(eta)ds')
 for addr, page in zip(range(0, bootloader_start, pagesize), pages(seg.data, pagesize)):
 

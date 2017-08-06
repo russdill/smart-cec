@@ -83,6 +83,12 @@ main.elf: $(OBJS)
 keymap.hex: lg_cec_keymap.o
 	$(OBJCOPY) -j .progmem.data.cec_keymap -O ihex $< $@ --change-address 16
 
+keymap_data.o: keymap.hex
+	$(OBJCOPY) -I ihex -O elf32-avr --rename-section .sec1=.progmem $< $@
+
+program_eeprom.elf: program_eeprom.o keymap_data.o
+	$(CC) -mmcu=$(DEVICE) -o $@ $^
+
 %.hex: %.elf
 	$(OBJCOPY) -j .text -j .data -O ihex $< $@
 	avr-size $@

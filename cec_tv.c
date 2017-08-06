@@ -1,3 +1,20 @@
+/*
+ * Copyright (C) 2016 Russ Dill <russ.dill@gmail.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include <stddef.h>
 #include <avr/pgmspace.h>
 #include <avr/wdt.h>
@@ -28,50 +45,104 @@ enum new_source_state {
 
 extern bool ser_overflow;
 
+/* Key repeart timeout, initial repeat 500ms, subsequent 100ms */
 static signed char timeouts[5];
 #define repeat_timeout		timeouts[0]
+
+/* Controls how often to send serial commands/queries to the TV */
 #define tv_query_timeout	timeouts[1]
+
+/* New source state machine timeout */
 #define new_source_timeout	timeouts[2]
+
+/*
+ * How long to wait for all routing change messages to be received before
+ * acting on them.
+ */
 #define routing_change_timeout	timeouts[3]
 #define serial_timeout		timeouts[4]
 
+/* Queue of messages that require direct replies */
 static unsigned char recv_pend_cnt;
 static unsigned char recv_pend[8*2];
 
+/* Remote keycode to send to the TV */
 static unsigned char serial_key_code;
+
+/* Translated CEC keycode to send to the active source */
 static unsigned char cec_ui_command;
 
+/* Current power state of the TV */
 static unsigned char tv_state;
 
+/* Bitmap of present CEC addresses */
 static unsigned short source_present;
+
+/* Next source to test */
 static unsigned char next_source;
+
+/* The CEC address of our current source */
 register unsigned char tv_logical_source asm("r4");
 
+/* State machine for searching for a new source */
 register unsigned char new_source_state asm("r3");
+
+/* The physical address of our current source */
 static unsigned short tv_phys_source;
 
+/*
+ * The physical address of the new source, subject to change as switches
+ * react to the routing change messages.
+ */
 static unsigned short new_routing_phys;
 
+/* Deck command to send to the current active source */
 static unsigned char deck_cmd;
 
+/* Tracking of serial reply from TV */
 static unsigned char serial_pos;
 static unsigned char serial_code;
 static unsigned char serial_ack1;
 static unsigned char serial_ack2;
 static unsigned char serial_resp;
 
+/* We need to send a message to the TV to indicate the current input */
 #define FLAG0_SEND_PHYS_SOURCE_SER	0
+
+/*
+ * We need send a CEC set stream path message to indicate a new physical
+ * source
+ */
 #define FLAG0_SEND_PHYS_SOURCE_CEC	1
+
+/*
+ * A routing change message was received, process it after the routing
+ * change timeout
+ */
 #define FLAG0_ROUTING_CHANGE		2
+
+/* Send a CEC button press release message */
 #define FLAG0_CEC_RELEASE		3
+
+/* Send a CEC button press message */
 #define FLAG0_CEC_UI_COMMAND		4
+
+/* Notify active source that TV is turning off */
 #define FLAG0_ACTIVE_SOURCE		5
+
+/* Current key for TV should repeat every 100ms */
 #define FLAG0_KEY_REPEAT		6
+
+/* Current key for TV should send just once */
 #define FLAG0_KEY_ONCE			7
 
+/* Broadcast a CEC menu language message */
 #define FLAG1_MENU_LANG			0
+
+/* Broadcast a current physical address message */
 #define FLAG1_GIVE_PHYS			1
 
+/* New serial byte from the TV */
 static bool usi_uart_process_byte(void)
 {
 	unsigned char byte;
@@ -88,6 +159,7 @@ static bool usi_uart_process_byte(void)
 
 	serial_timeout = MS_TO_LJIFFIES_UP(100);
 
+	/* Final byte is always x */
 	if (byte == 'x') {
 		if (serial_pos == 7)
 			serial_resp = '0';
@@ -96,8 +168,11 @@ static bool usi_uart_process_byte(void)
 	}
 
 	/*
+	 * Format of LG messages:
+	 *
 	 * [Command2][ ][Set ID][ ][OK][Data][x]
 	 * [Command2][ ][Set ID][ ][NG][x]
+	 *
 	 * m 01 OK00x
 	 * m 01 NGx
 	 * 012345678
@@ -116,6 +191,7 @@ static bool usi_uart_process_byte(void)
 	return true;
 }
 
+/* Process complete serial message from TV */
 static void lg_response(void)
 {
 	if (serial_code != 'm')
@@ -159,7 +235,7 @@ IR_NEC_PUBLIC void ir_nec_release(void)
 	GPIOR0 &= ~_BV(FLAG0_KEY_REPEAT);
 }
 
-/* Needs serial port */
+/* Periodic things that need to send on the serial port */
 static bool cec_tv_periodic_serial_tx(void)
 {
 	unsigned char cmd1, cmd2, code;
@@ -167,6 +243,7 @@ static bool cec_tv_periodic_serial_tx(void)
 	if (!usi_uart_write_empty())
 		return false;
 
+	/* Mute */
 	if (GPIOR0 & _BV(FLAG0_KEY_ONCE)) {
 		GPIOR0 &= ~_BV(FLAG0_KEY_ONCE);
 		goto send_key;
@@ -182,6 +259,7 @@ send_key:
 		goto send1;
 	}
 
+	/* Change the TV input */
 	if ((GPIOR0 & _BV(FLAG0_SEND_PHYS_SOURCE_SER)) && tv_state == TV_ON) {
 		GPIOR0 &= ~_BV(FLAG0_SEND_PHYS_SOURCE_SER);
 
@@ -194,6 +272,7 @@ send_key:
 		goto send1;
 	}
 
+	/* Periodic requests to TV */
 	if (tv_query_timeout > 0)
 		return false;
 
@@ -244,6 +323,7 @@ send1:
 	return true;
 }
 
+/* Periodically check if there is a new IR button press */
 static bool ir_nec_press_periodic(void)
 {
 	unsigned char code;
@@ -335,6 +415,7 @@ static bool ir_nec_press_periodic(void)
 		if (!tv_logical_source)
 			break;
 
+		/* Lookup the translated CEC key in the EEPROM */
 		EEAR = code + 0x10;
 		EECR |= _BV(EERE);
 		cec_ui_command = EEDR;
@@ -347,13 +428,16 @@ static bool ir_nec_press_periodic(void)
 	return true;
 }
 
-/* Needs CEC */
+/* Periodic things that need to send CEC messages */
 static bool cec_tv_periodic_cec_tx(void)
 {
 	unsigned char end;
 	unsigned char *buf;
 
-	/* Convince GCC to let us use indirect addressing */
+	/*
+	 * Convince GCC to let us use indirect addressing. This lets us use 2
+	 * byte opcodes to access memory rather than 4.
+	 */
 	asm("ldi %A0, lo8(transmit_buf)\n"
 	    "ldi %B0, hi8(transmit_buf)\n" : "=b"(buf));
 
@@ -517,10 +601,9 @@ xmit:
 	return true;
 }
 
+/* Messages directly addressed to us */
 static void cec_tv_process_cec_rx_direct(unsigned char source, unsigned char len)
 {
-
-	/* Directly addressed messages */
 	switch (cec_receive_buf[2]) {
 	/* One Touch Play */
 	case CEC_MSG_IMAGE_VIEW_ON:
@@ -573,9 +656,9 @@ static void cec_tv_process_cec_rx_direct(unsigned char source, unsigned char len
 	}
 }
 
+/* Messages sent to the broadcast address */
 static void cec_tv_process_cec_rx_bcast(unsigned char source, unsigned char len)
 {
-	/* Broadcast messages */
 	switch (cec_receive_buf[2]) {
 	case CEC_MSG_ROUTING_CHANGE:
 		/* bcast, Old physical address, new physical address */
@@ -639,6 +722,7 @@ static void cec_tv_process_cec_rx_bcast(unsigned char source, unsigned char len)
 	}
 }
 
+/* Process received CEC messages */
 static bool cec_tv_process_cec_rx(void)
 {
 	unsigned char len;
@@ -680,6 +764,8 @@ static bool cec_tv_process_cec_rx(void)
 CEC_TV_PUBLIC void cec_tv_periodic(unsigned char delta_long)
 {
 	unsigned char i;
+
+	/* Update timeouts */
 	for (i = 0; i < sizeof(timeouts); i++) {
 		if (timeouts[i] >= 0)
 			timeouts[i] -= delta_long;
@@ -691,8 +777,10 @@ CEC_TV_PUBLIC void cec_tv_periodic(unsigned char delta_long)
 	if (transmit_buf[0] && transmit_state < TRANSMIT_PEND) {
 		unsigned char target = transmit_buf[0] & 0xf;
 		if (transmit_state == TRANSMIT_FAILED) {
+			/* This source clearly isn't there */
 			source_present &= ~(1 << target);
 			if (target == tv_logical_source)
+				/* It was our active source, pick a new one */
 				new_source_state = NEW_SOURCE_PICK;
 		} else
 			source_present |= 1 << target;
@@ -700,6 +788,7 @@ CEC_TV_PUBLIC void cec_tv_periodic(unsigned char delta_long)
 		return;
 	}
 
+	/* We waited long enough for all routing changes messages, act on them */
 	if (routing_change_timeout < 0 && (GPIOR0 & _BV(FLAG0_ROUTING_CHANGE))) {
 		GPIOR0 &= ~_BV(FLAG0_ROUTING_CHANGE);
 
@@ -715,6 +804,7 @@ CEC_TV_PUBLIC void cec_tv_periodic(unsigned char delta_long)
 	}
 
 	if (new_source_timeout < 0) {
+		/* Advance the new source state machine */
 		if (new_source_state == NEW_SOURCE_PHYS) {
 			/* Our query never came back */
 			new_source_state = NEW_SOURCE_LOGICAL;
@@ -728,6 +818,7 @@ CEC_TV_PUBLIC void cec_tv_periodic(unsigned char delta_long)
 	}
 
 	if (new_source_state == NEW_SOURCE_PICK) {
+		/* Restart the new source state machine */
 		next_source = tv_logical_source;
 		tv_logical_source = 0;
 		new_source_state = NEW_SOURCE_LOGICAL;
@@ -759,8 +850,5 @@ CEC_TV_PUBLIC void cec_tv_periodic(unsigned char delta_long)
 	/* Handle any events that require us to send CEC messages */
 	if (cec_tv_periodic_cec_tx())
 		return;
-
-	/* Routing change information expiration */
-	/* After routing change/routing formation is complete, set stream path */
 }
 

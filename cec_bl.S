@@ -1,3 +1,65 @@
+/*
+ * Copyright (C) 2016 Russ Dill <russ.dill@gmail.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * CEC Bootloader.
+ *
+ * This is a CEC based bootloader. In general, it has a long list of cons and
+ * should never be in a consumer device:
+ *
+ * - It's slow, it takes about 3 minutes to program 4kb.
+ * - It's insecure, any CEC device on the bus can reprogram the device.
+ * - The only acknowledgement provided is the CEC protocol ack, it otherwise
+ *   sends no messages.
+ * - It currently only operates on a fixed CEC address of 0 (TV)
+ *
+ * However, it does offer the advantage of being able to reprogram a device
+ * without accessing it and connecting up debug pins.
+ *
+ * Messages have two general formats, one without data and one with data:
+ *
+ * src/tgt | op | cmd | crc1 | crc2
+ * src/tgt | op | cmd | d0 | d1 | d2 | d3 | d4 | d5 | d6 | d7 | crc1 | crc2
+ *
+ * Messages have a trailing CRC16, produced with a polynomial of 0x18005 and
+ * an initial CRC of 0xffff. If the running CRC value when EOM is received
+ * is zero, the message is acked. It is not acked otherwise.
+ *
+ * The CEC target address must be 0 (TV) and the CEC opcode must be 0x89,
+ * vendor command. The available commands are:
+ *
+ * 0x00: ping - Just acks if the device is present, no action
+ * 0x03: erase - Erase the program memory. This also resets the data write
+         pointer.
+ * 0x05: data write - Write a data block. Data should be sent 8 bytes at a
+ *       time starting from address zero.
+ * 0x01: run - Exit the bootloader. This should be called once the new
+ *       program is written.
+ *
+ * The host side bootloader programmer should rewrite the vector table reset
+ * address to the start address of the bootloader. This allows the bootloader
+ * to examine the wakeup reason before executing the user program. If the
+ * wakeup reason is watchdog or ext reset, it will instead execute the
+ * bootloader code. The bootloader can be exited by power cycling the device
+ * or sending the run command.
+ *
+ * The total size of the bootloader is 0x128 bytes. Given 64 byte erase
+ * blocks, it takes up 5 erase blocks. These 5 erase blocks should be placed
+ * at the end of flash, for a 4kb device, that means the bootloader address
+ * should be 0xec0.
+ */
 
 #define __SFR_OFFSET 0
 

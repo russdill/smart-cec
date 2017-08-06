@@ -1,3 +1,19 @@
+# Copyright (C) 2007 by OBJECTIVE DEVELOPMENT Software GmbH
+# Copyright (C) 2016 Russ Dill <russ.dill@gmail.com>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 CONFIG ?= t45
 
 CONFIGPATH = configs/$(CONFIG)
@@ -38,9 +54,11 @@ all: main.hex test.hex echo.hex
 fuse:
 	$(AVRDUDE) $(FUSEOPT) -B 20
 
+# Flash the application and keymap without a bootloader
 flash: main.hex keymap.hex
 	$(AVRDUDE) -U flash:w:main.hex:i -U eeprom:w:keymap.hex:i -B 20
 
+# Flash a combined image with bootloader, keymap, and application
 flashc: combined.hex keymap.hex
 	$(AVRDUDE) -U flash:w:combined.hex:i -U eeprom:w:keymap.hex:i -B 20
 
@@ -88,12 +106,14 @@ run_bl.elf: CFLAGS += -nostartfiles -nostdlib
 run_bl.elf: run_bl.o
 	$(CC) $(CFLAGS) -o $@ $^
 
+# Create a combined image with bootloader and application
 combined.hex: main.hex run_user.hex run_bl.hex cec_bl.hex
 	srec_cat main.hex -intel -exclude -within run_bl.hex -intel \
 		run_bl.hex -intel \
 		run_user.hex -intel -exclude -within main.hex -intel \
 		cec_bl.hex -intel -o $@ -intel
 
+# Just flash the bootloader
 flashbl: cec_bl.hex
 	$(AVRDUDE) -U flash:w:$<:i -B 20
 

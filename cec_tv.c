@@ -260,6 +260,16 @@ send_key:
 		cmd1 = 'm';
 		cmd2 = 'c';
 		code = serial_key_code;
+
+		/*
+		 * Argh....sometimes sending mute twice pops up a menu.
+		 * Sending an extra "any" key between mute presses avoids
+		 * this.
+		 */
+		if (code == KEY_MUTE) {
+			serial_key_code = KEY_RIGHT;
+			GPIOR0 |= _BV(FLAG0_KEY_ONCE);
+		}
 		goto send1;
 	}
 

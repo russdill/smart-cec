@@ -43,9 +43,9 @@ enum new_source_state {
 	NEW_SOURCE_PHYS,
 };
 
+static signed char timeouts[6];
 
 /* Key repeart timeout, initial repeat 500ms, subsequent 100ms */
-static signed char timeouts[5];
 #define repeat_timeout		timeouts[0]
 
 /* Controls how often to send serial commands/queries to the TV */
@@ -63,6 +63,7 @@ static signed char timeouts[5];
 /* Discard partial messages from the TV after the serial timeout */
 #define serial_rx_timeout	timeouts[4]
 
+#define serial_tx_timeout	timeouts[5]
 
 /* Queue of messages that require direct replies */
 static unsigned char recv_pend_cnt;
@@ -143,6 +144,9 @@ static unsigned char serial_resp;
 
 /* Broadcast a current physical address message */
 #define FLAG1_GIVE_PHYS			1
+
+/* Pause a little bit between serial messages */
+#define FLAG1_NEEDS_TX_PAUSE		2
 
 /* New serial byte from the TV */
 static bool usi_uart_process_byte(void)
@@ -236,6 +240,13 @@ static bool cec_tv_periodic_serial_tx(void)
 	if (!usi_uart_write_empty())
 		return false;
 
+	if (GPIOR1 & _BV(FLAG1_NEEDS_TX_PAUSE))
+		serial_tx_timeout = MS_TO_LJIFFIES_UP(5);
+	GPIOR1 &= ~_BV(FLAG1_NEEDS_TX_PAUSE);
+
+	if (serial_tx_timeout >= 0)
+		return false;
+
 	/* Mute */
 	if (GPIOR0 & _BV(FLAG0_KEY_ONCE)) {
 		GPIOR0 &= ~_BV(FLAG0_KEY_ONCE);
@@ -313,6 +324,7 @@ send1:
 	usi_uart_num(code >> 4);
 	usi_uart_num(code & 0xf);
 	usi_uart_put('\r');
+	GPIOR1 |= _BV(FLAG1_NEEDS_TX_PAUSE);
 	return true;
 }
 

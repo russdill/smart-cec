@@ -18,7 +18,7 @@
 #include <avr/io.h>
 #include <avr/eeprom.h>
 
-CEC_PUBLIC void load_osccal(void)
+static void load_osccal(void)
 {
 #if 0
 	/* Step osccal value by most 1 each time */

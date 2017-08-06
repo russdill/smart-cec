@@ -59,7 +59,10 @@ static signed char timeouts[5];
  * acting on them.
  */
 #define routing_change_timeout	timeouts[3]
-#define serial_timeout		timeouts[4]
+
+/* Discard partial messages from the TV after the serial timeout */
+#define serial_rx_timeout	timeouts[4]
+
 
 /* Queue of messages that require direct replies */
 static unsigned char recv_pend_cnt;
@@ -153,10 +156,11 @@ static bool usi_uart_process_byte(void)
 		ser_recv_ready = false;
 	}
 
-	if (serial_timeout < 0)
+	/* Been to long since last byte, this is a new message */
+	if (serial_rx_timeout < 0)
 		serial_pos = 0;
 
-	serial_timeout = MS_TO_LJIFFIES_UP(100);
+	serial_rx_timeout = MS_TO_LJIFFIES_UP(100);
 
 	/* Final byte is always x */
 	if (byte == 'x') {
